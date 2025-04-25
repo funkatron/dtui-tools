@@ -38,6 +38,10 @@ class DrawThingsClient:
             seed: Random seed (-1 for random)
             model: Model to use for generation
             loras: List of LoRA models to apply
+            negative_prompt: Negative prompt for image generation
+            guidance_scale: Guidance scale for the diffusion process
+            sampler: Sampler to use for generation
+            clip_skip: Number of CLIP layers to skip
             output_dir: Directory to save the image
 
         Returns:
@@ -63,7 +67,11 @@ class DrawThingsClient:
             steps=steps,
             seed=seed,
             model=model,
-            loras=loras
+            loras=loras,
+            negative_prompt=negative_prompt,
+            guidance_scale=guidance_scale,
+            sampler=sampler,
+            clip_skip=clip_skip
         )
 
         # Save images

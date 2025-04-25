@@ -8,6 +8,9 @@ from typing import List, Optional, Dict, Any
 import urllib.request
 import urllib.error
 from pathlib import Path
+from datetime import datetime
+
+from ..config.settings import settings
 
 class ImageGenerationError(Exception):
     """Base exception for image generation errors."""
@@ -16,23 +19,27 @@ class ImageGenerationError(Exception):
 class ImageGenerator:
     """Core image generation functionality."""
 
-    def __init__(self, api_url: str = "http://localhost:9999/sdapi/v1/txt2img"):
+    def __init__(self, api_url: str = None):
         """Initialize the image generator.
 
         Args:
             api_url: URL of the Draw Things API endpoint
         """
-        self.api_url = api_url
+        self.api_url = api_url or settings.API_URL
 
     def generate_images(
         self,
         prompt: str,
-        width: int = 512,
-        height: int = 512,
-        steps: int = 30,
-        seed: int = -1,
-        model: str = "standard",
-        loras: List[str] = None
+        width: int = None,
+        height: int = None,
+        steps: int = None,
+        seed: int = None,
+        model: str = None,
+        loras: List[str] = None,
+        negative_prompt: str = None,
+        guidance_scale: float = None,
+        sampler: str = None,
+        clip_skip: int = None
     ) -> List[str]:
         """Generate images using the Draw Things API.
 
@@ -44,6 +51,10 @@ class ImageGenerator:
             seed: Random seed (-1 for random)
             model: Model to use for generation
             loras: List of LoRA models to apply
+            negative_prompt: Negative prompt for image generation
+            guidance_scale: Guidance scale for the diffusion process
+            sampler: Sampler to use for generation
+            clip_skip: Number of CLIP layers to skip
 
         Returns:
             List of base64-encoded images
@@ -54,27 +65,48 @@ class ImageGenerator:
         if loras is None:
             loras = []
 
+        # Basic payload with required parameters
         payload = {
             "prompt": prompt,
-            "width": width,
-            "height": height,
-            "steps": steps,
-            "seed": seed,
-            "model": model,
-            "loras": loras
+            "negative_prompt": negative_prompt or settings.DEFAULT_NEGATIVE_PROMPT,
+            "width": width or settings.DEFAULT_WIDTH,
+            "height": height or settings.DEFAULT_HEIGHT,
+            "steps": steps or settings.DEFAULT_STEPS,
+            "cfg_scale": guidance_scale or settings.DEFAULT_GUIDANCE_SCALE,
+            "sampler_name": sampler or settings.DEFAULT_SAMPLER,
+            "seed": seed or settings.DEFAULT_SEED,
+            "clip_skip": clip_skip or settings.DEFAULT_CLIP_SKIP,
+            "batch_size": 1,
+            "n_iter": 1,
+            "restore_faces": False,
+            "enable_hr": False,
+            "denoising_strength": 0.7
         }
+
+        # Add LoRA models if specified
+        if loras:
+            payload["alwayson_scripts"] = {
+                "lora": {
+                    "args": [{"model": lora} for lora in loras]
+                }
+            }
 
         data = json.dumps(payload).encode('utf-8')
         req = urllib.request.Request(
             self.api_url,
             data=data,
-            headers={'Content-Type': 'application/json'}
+            headers={'Content-Type': 'application/json'},
+            method='POST'
         )
 
         try:
             with urllib.request.urlopen(req) as response:
                 result = json.loads(response.read().decode('utf-8'))
-                return result.get('images', [])
+                # The API returns the generated image in the response
+                if 'images' in result:
+                    return result['images']
+                else:
+                    raise ImageGenerationError("No images in API response")
         except urllib.error.HTTPError as e:
             raise ImageGenerationError(f"HTTP Error: {e.code} {e.reason}")
         except urllib.error.URLError as e:
@@ -97,34 +129,40 @@ class ImageGenerator:
 
         Returns:
             List of paths to saved images
-
-        Raises:
-            ImageGenerationError: If no images are provided or saving fails
         """
         if not images:
-            raise ImageGenerationError("No images to save")
+            return []
 
-        written_paths = []
-        output_path = Path(output_dir) if output_dir else Path.cwd()
+        output_dir = Path(output_dir or settings.OUTPUT_DIR or "generated_images")
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        for i, img_data in enumerate(images):
+        saved_paths = []
+        for i, image_data in enumerate(images):
+            # Decode base64 image
             try:
-                img_bytes = base64.b64decode(img_data)
-                if model_name:
-                    img_file_path = output_path / f"generated_image_{str(i + 1).zfill(6)}-{model_name}.png"
-                else:
-                    img_file_path = output_path / f"generated_image_{i}.png"
+                image_bytes = base64.b64decode(image_data)
+            except Exception as e:
+                raise ImageGenerationError(f"Error decoding image: {str(e)}")
 
-                with open(img_file_path, "wb") as img_file:
-                    img_file.write(img_bytes)
-                    written_paths.append(str(img_file_path))
-            except (base64.binascii.Error, OSError) as e:
+            # Generate filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"image_{timestamp}_{i}.png"
+            if model_name:
+                filename = f"{model_name}_{filename}"
+
+            # Save image
+            file_path = output_dir / filename
+            try:
+                with open(file_path, "wb") as f:
+                    f.write(image_bytes)
+                saved_paths.append(str(file_path))
+            except Exception as e:
                 raise ImageGenerationError(f"Error saving image: {str(e)}")
 
-        return written_paths
+        return saved_paths
 
     def get_available_models(self) -> List[str]:
-        """Get list of available models from the API.
+        """Get list of available models.
 
         Returns:
             List of available model names
@@ -132,10 +170,12 @@ class ImageGenerator:
         Raises:
             ImageGenerationError: If model list retrieval fails
         """
+        models_url = self.api_url.replace("/txt2img", "/sd-models")
         try:
-            with urllib.request.urlopen(self.api_url) as response:
+            with urllib.request.urlopen(models_url) as response:
                 result = json.loads(response.read().decode('utf-8'))
-                return result.get('models', [])
+                # The API returns a list of model objects
+                return [model.get('title', '') for model in result]
         except urllib.error.HTTPError as e:
             raise ImageGenerationError(f"HTTP Error: {e.code} {e.reason}")
         except urllib.error.URLError as e:
